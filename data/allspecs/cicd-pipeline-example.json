@@ -4,19 +4,6 @@
   "version": "1.0",
   "archived": false,
   "flowSpec": {
-    "f6ec4777-da3a-4e40-9047-ec47c9f8e19b:43ea32b3-d4e5-42e7-8c1c-d29014f3120f": [
-      {
-        "__documentation__": "",
-        "id": "43ea32b3-d4e5-42e7-8c1c-d29014f3120f",
-        "name": "log-connector",
-        "params": {
-          "logLevel": "INFO",
-          "message": "Processing the cicd-pipeline-example."
-        },
-        "stepName": "Log",
-        "type": "connector"
-      }
-    ],
     "f6ec4777-da3a-4e40-9047-ec47c9f8e19b:89393b78-93fb-433e-b8f9-4fd06c582448": [
       {
         "__documentation__": "",
