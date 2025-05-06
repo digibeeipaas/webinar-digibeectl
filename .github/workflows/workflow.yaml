@@ -7,7 +7,7 @@ on:
 
 env:
   FLOWSPEC_PATH: ./data/allspecs
-  PIPELINE: cicd-pipeline-example
+  PIPELINE: cicd-pipeline-example-1
   PIPELINE_PATH: "./data/allspecs/$PIPELINE.json"
   DIGIBEECTL_PATH: "./.scripts"
   DIGIBEECTL_AUTH_KEY: ${{ secrets.DIGIBEECTL_AUTH_KEY }}
