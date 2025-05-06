@@ -1,0 +1,177 @@
+name: CI & CD (Simple Flow)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  FLOWSPEC_PATH: ./data/allspecs
+  PIPELINE: cicd-pipeline-example
+  PIPELINE_PATH: "./data/allspecs/$PIPELINE.json"
+  DIGIBEECTL_PATH: "./.scripts"
+  DIGIBEECTL_AUTH_KEY: ${{ secrets.DIGIBEECTL_AUTH_KEY }}
+  DIGIBEECTL_SECRET_KEY: ${{ secrets.DIGIBEECTL_SECRET_KEY }}
+  DIGIBEECTL_TOKEN_JSON: ${{ secrets.DIGIBEECTL_TOKEN_JSON }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar e configurar o DigibeeCTL
+        run: ./install-digibeectl.sh
+
+      - name: Validar pipeline
+        run: |
+          echo "::group::[VALIDAÇÃO] Verificação do pipeline"
+          echo "=================================================="
+          echo "           INICIANDO VALIDAÇÃO DO PIPELINE        "
+          echo "=================================================="
+
+          # Variáveis de entrada
+          spec_file="${{ env.FLOWSPEC_PATH }}/${{ env.PIPELINE }}.json"
+
+          # Verificando se o arquivo existe
+          if [ ! -f "$spec_file" ]; then
+            echo "[ERRO] Arquivo de flowspec não encontrado: $spec_file"
+            exit 1
+          fi
+
+          json_data=$(cat "$spec_file")
+          # Verificando se o arquivo é um JSON válido
+          if ! echo "$json_data" | jq . >/dev/null 2>&1; then
+            echo "[ERRO] O arquivo não possui um JSON válido:"
+            echo "$json_data"
+            exit 1
+          fi
+          echo "[INFO] Arquivo de flowspec válido: $spec_file"
+          echo "=================================================="
+          echo "::endgroup::"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: 
+      - build
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        
+      - name: Instalar e configurar o DigibeeCTL
+        run: ./install-digibeectl.sh
+
+      - name: Verificação de flowspec do pipeline
+        id: verify_flowspec
+        run: |
+          echo "::group::[VALIDAÇÃO] Verificação de flowspec"
+          echo "=================================================="
+          echo "         INICIANDO VERIFICAÇÃO DE FLOWSPEC        "
+          echo "=================================================="
+          
+          pipeline=$(cat "${{ env.FLOWSPEC_PATH }}/${{ env.PIPELINE }}.json")
+          pipeline_id=$(echo $pipeline | jq -r '.id')
+          name=$(echo $pipeline | jq -r '.name')
+
+          echo "[INFO] Verificando flowspec do pipeline: $name"
+          
+          pipeline_id=$(echo "$pipeline_id" | tr -cd '0-9a-zA-Z\-')
+          
+          # Extraindo flowspec local e gerando hash
+          echo "[INFO] Extraindo flowspec local do arquivo: ${{ env.PIPELINE_PATH }}"
+          local_flowspec=$(jq -c '.flowSpec' "${{ env.PIPELINE_PATH }}")
+          local_hash=$(echo "$local_flowspec" | sha256sum | cut -d' ' -f1)
+          echo "[INFO] Hash do flowspec local: $local_hash"
+          
+          # Obtendo flowspec do servidor e gerando hash
+          echo "[INFO] Obtendo flowspec do servidor para pipeline: $name (ID: $pipeline_id)"
+          flowspec_command="digibeectl get pipeline --pipeline-id \"$pipeline_id\" --flowspec true"
+          echo "[INFO] Executando: $flowspec_command"          
+          remote_flowspec_output=$(eval $flowspec_command 2>&1)
+
+          if [[ "$remote_flowspec_output" == *"No such entity"* ]]; then
+            echo "[ERRO] Pipeline não encontrado no servidor: $name (ID: $pipeline_id)"
+            exit 1
+          fi
+          
+          if ! echo "$remote_flowspec_output" | jq . >/dev/null 2>&1; then
+            echo "[ERRO] O remote flowspec não possui um JSON válido:"
+            echo "$remote_flowspec_output"
+            exit 1
+          fi
+          
+          remote_flowspec_normalized=$(echo "$remote_flowspec_output" | jq -c '.' 2>/dev/null)
+          if [[ $? -ne 0 ]]; then
+            echo "[ERRO] Falha ao normalizar o JSON do servidor"
+            exit 1
+          fi
+          
+          remote_hash=$(echo "$remote_flowspec_normalized" | sha256sum | cut -d' ' -f1)
+          echo "[INFO] Hash do flowspec remoto: $remote_hash"
+          
+          # Comparar os hashes
+          if [[ "$local_hash" == "$remote_hash" ]]; then
+            echo "[SUCESSO] Flowspec verificado e aprovado para: $name"
+          else
+            echo "[AVISO] Flowspec diferente para o pipeline: $name"
+            echo "[INFO] Tentando comparação secundária removendo espaços em branco e formatação..."
+            
+            # Tenta remover espaços e formatação para uma comparação secundária
+            local_normalized=$(echo "$local_flowspec" | jq -c '.' | tr -d '[:space:]')
+            remote_normalized=$(echo "$remote_flowspec_normalized" | tr -d '[:space:]')
+            
+            if [[ "$local_normalized" == "$remote_normalized" ]]; then
+              echo "[SUCESSO] Flowspec verificado após normalização. Aprovado para: $name"
+            else
+              echo "[ERRO] Houve mudanças pós aprovação do pipeline: $name"
+              exit 1
+            fi
+          fi
+
+          echo "=================================================="
+          echo "::endgroup::"
+
+      - name: Executar deployment
+        run: |
+          echo "::group::[DEPLOY] Iniciando processo de deploy"
+          echo "=================================================="
+          echo "           INICIANDO DEPLOY DO PIPELINE           "
+          echo "=================================================="
+          
+          pipeline=$(cat "${{ env.PIPELINE_PATH }}")
+          pipeline_id=$(echo $pipeline | jq -r '.id')
+          name=$(echo $pipeline | jq -r '.name')
+
+          echo "[INFO] Processando pipeline: $name (ID: $pipeline_id)"
+          
+          echo "[INFO] Verificando implantação atual para $name..."
+          deployment_check=$(digibeectl get deployment --name "$name" --projectName "" -o | sed "s/No resources found./[]/g" || echo '[]')
+
+          if [[ "$deployment_check" == "[]" ]]; then
+            echo "[INFO] Pipeline não encontrado, executando deploy inicial"
+            cmd=$(echo "digibeectl create deployment --pipeline-id \"$pipeline_id\"")
+          else
+            echo "[AVISO] Pipeline já implantado, executando redeploy"
+            cmd=$(echo "digibeectl create deployment --pipeline-id \"$pipeline_id\" --redeploy")
+          fi
+          
+          echo "[INFO] Executando comando: $cmd"
+          output=$(eval $cmd)
+          echo "Saída da execução: $output"
+          
+          if [[ "$output" != *"Deployment created"* ]]; then
+            echo "[ERRO] Falha ao implantar o pipeline $name"
+            echo "$output"
+            echo "[ERRO] Verifique o erro acima e tente novamente"
+            echo "[ERRO] Se o erro persistir, entre em contato com o suporte"
+            echo "[ERRO] ou verifique a documentação do DigibeeCTL"
+            exit 1
+          else
+            echo "[SUCESSO] Pipeline $name implantado corretamente"
+          fi
+          
+          echo "==================================================" 
+          echo "::endgroup::"
